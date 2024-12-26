@@ -1,4 +1,4 @@
-# Linux Compromise Detection Tool
+# Linux Compromise (perfctl) Detection Tool
 
 This tool is designed to detect potential system compromises, particularly focusing on the `perfctl` malware family and similar threats. It performs various checks to identify suspicious files, processes, and system configurations that might indicate a compromise.
 
