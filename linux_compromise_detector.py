@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import contextlib
 import os
 import subprocess
 import hashlib
@@ -13,20 +14,32 @@ class CompromiseDetector:
         # Directories to check (must end with /)
         self.suspicious_dirs = [
             "/tmp/.xdiag/",
+            "/tmp/.perf.c/",
+            "/usr/bin/.atmp/tmp/.applocal.xdiag/",
+            "/dev/shm/.dmesg/pds/"
         ]
         
-        # Files to check
-        self.suspicious_files = [
+        self.malicious_libs = [
             "/lib/libfsnldev.so",
-            "/tmp/wttwe",
             "/lib/libgcwrap.so",
             "/lib/libpprocps.so",
+            "/usr/lib/libfsnldev.so",
+            "/usr/lib/libgcwrap.so",
+            "/usr/lib/libpprocps.so",
+        ]
+        # Files to check
+        self.suspicious_files = self.malicious_libs + [
+            "/tmp/wttwe",
             "/tmp/kubeupd",
             "/bin/kkbush",
             "/bin/perfcc",
-            "/tmp/.perf.c"
+            "/usr/bin/perfcc",
+            "/usr/bin/wizlmsh",
+            "/dev/shm/libfsnldev.so",
+            "/dev/shm/libpprocps.so"
+            "/root/.config/cron/perfcc",
         ]
-        
+
         self.suspicious_processes = [
             "perfctl",
             "perfcc",
@@ -93,7 +106,7 @@ class CompromiseDetector:
             if any(methods.values()):
                 self.findings.append({
                     "type": "suspicious_directory",
-                    "severity": "HIGH",
+                    "severity": "CRITICAL",
                     "details": f"Found suspicious directory: {path}/ (detected by: {[k for k,v in methods.items() if v]})",
                     "timestamp": datetime.now().isoformat()
                 })
@@ -102,27 +115,14 @@ class CompromiseDetector:
         for path in self.suspicious_files:
             if self.check_with_find(path) or self.check_with_ls(path):
                 self.findings.append({
-                    "type": "suspicious_file",
-                    "severity": "HIGH",
+                    "type": "malicious_file",
+                    "severity": "CRITICAL",
                     "details": f"Found suspicious file: {path}",
                     "timestamp": datetime.now().isoformat()
                 })
 
     def check_for_rootkit(self):
         """Check for signs of rootkit presence"""
-        # Check for LD_PRELOAD
-        try:
-            env = subprocess.check_output(["env"], text=True)
-            if "LD_PRELOAD" in env:
-                self.findings.append({
-                    "type": "rootkit_indicator",
-                    "severity": "CRITICAL",
-                    "details": "LD_PRELOAD environment variable detected",
-                    "timestamp": datetime.now().isoformat()
-                })
-        except:
-            pass
-
         # Check for hidden processes using different ps commands
         try:
             ps_aux = subprocess.check_output(["ps", "aux"], text=True)
@@ -298,6 +298,64 @@ class CompromiseDetector:
                 })
         except subprocess.SubProcessError:
             pass
+        
+    def check_lib_presence_with_ldd(self):
+        """Check for malicious libraries loaded by system binaries"""
+            # Run ldd with LD_PRELOAD unset to avoid hooks
+        result = subprocess.run(
+            ["env", "--unset=LD_PRELOAD", "ldd", "/sbin/fsck.ext4"], 
+            capture_output=True, 
+            text=True
+        )
+        
+        # Check for malicious libraries in dependencies
+        for lib in self.malicious_libs:
+            if lib in result.stdout:
+                self.findings.append({
+                    "type": "malicious_library_loaded",
+                    "severity": "CRITICAL", 
+                    "details": f"Found malicious library in ldd output (without LD_PRELOAD): {lib}",
+                    "timestamp": datetime.now().isoformat()
+                })
+    
+    def check_libs_in_maps(self):
+        """Check for malicious libraries mapped into process memory"""
+        for pid in filter(lambda x: x.isdigit, os.listdir("/proc")):
+            maps_file_path = f"/proc/{pid}/maps"
+            with contextlib.suppress(PermissionError):
+                if not os.path.exists(maps_file_path):
+                    continue
+                with open(maps_file_path, 'r') as maps_file:
+                    for line in maps_file:
+                        for lib in self.malicious_libs:
+                            if lib in line:
+                                self.findings.append({
+                                    "type": "malicious_library_mapped", 
+                                    "severity": "CRITICAL",
+                                    "details": f"Found malicious library {lib} mapped in PID {pid}: {line.strip()}",
+                                    "timestamp": datetime.now().isoformat()
+                                })
+                                return
+    
+    def check_file_descryptors(self):
+        """Check for suspicious .xdiag file descriptor links in processes"""
+        for pid in filter(lambda x: x.isdigit, os.listdir("/proc")):
+            fd_path = f"/proc/{pid}/fd"
+            if not os.path.exists(fd_path):
+                continue
+            
+            with contextlib.suppress(PermissionError):
+                for fd in os.listdir(fd_path):
+                    with contextlib.suppress(OSError):
+                        link = os.readlink(os.path.join(fd_path, fd))
+                        if ".xdiag" in link:
+                            self.findings.append({
+                                "type": "malicious_fd_link", 
+                                "severity": "HIGH",
+                                "details": f"Found .xdiag file descriptor link in PID {pid}: {link}",
+                                "timestamp": datetime.now().isoformat()
+                            })
+                            return
 
     def run_all_checks(self):
         """Run all available checks"""
@@ -310,7 +368,10 @@ class CompromiseDetector:
             self.check_docker_containers,
             self.check_portainer_exposure,
             self.check_ssh_backdoors,
-            self.check_ld_preload
+            self.check_ld_preload,
+            self.check_lib_presence_with_ldd,
+            self.check_libs_in_maps,
+            self.check_file_descryptors,
         ]
         
         for check in checks:
